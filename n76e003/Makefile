@@ -1,0 +1,1 @@
+obj-$(CONFIG_N76E003_DRIVER) += n76e003.o

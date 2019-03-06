@@ -1,0 +1,739 @@
+commit f6be16bcb10949ae2f7cc689adc55c103fcacf79
+Author: shenhb <shenhb@topband.com.cn>
+Date:   Fri Jan 25 17:20:58 2019 +0800
+
+    【定时开关机】支持MCU N76E003，实现定时开机与Watchdog
+
+diff --git a/device/rockchip/common/device.mk b/device/rockchip/common/device.mk
+index d550371..fe49f56 100755
+--- a/device/rockchip/common/device.mk
++++ b/device/rockchip/common/device.mk
+@@ -356,7 +356,8 @@ PRODUCT_PACKAGES += \
+ 	
+ # Topband HAL
+ PRODUCT_PACKAGES += \
+-    gpio.default
++    gpio.default \
++	mcu.default
+ 
+ # iep
+ ifneq ($(filter rk3188 rk3190 rk3026 rk3288 rk312x rk3126c rk3128 px3se rk3368 rk3326 rk3328 rk3366 rk3399, $(strip $(TARGET_BOARD_PLATFORM))), )
+diff --git a/frameworks/base/Android.mk b/frameworks/base/Android.mk
+index d301cfd..af4872d 100755
+--- a/frameworks/base/Android.mk
++++ b/frameworks/base/Android.mk
+@@ -277,6 +277,7 @@ LOCAL_SRC_FILES += \
+ 	core/java/android/os/IUserManager.aidl \
+ 	core/java/android/os/IVibratorService.aidl \
+ 	core/java/android/os/IGpioService.aidl \
++	core/java/android/os/IMcuService.aidl \
+ 	core/java/android/os/storage/IStorageManager.aidl \
+ 	core/java/android/os/storage/IStorageEventListener.aidl \
+ 	core/java/android/os/storage/IStorageShutdownObserver.aidl \
+diff --git a/frameworks/base/api/current.txt b/frameworks/base/api/current.txt
+index a59d0c7..06f9f28 100644
+--- a/frameworks/base/api/current.txt
++++ b/frameworks/base/api/current.txt
+@@ -8969,6 +8969,7 @@ package android.content {
+     field public static final java.lang.String LAUNCHER_APPS_SERVICE = "launcherapps";
+     field public static final java.lang.String LAYOUT_INFLATER_SERVICE = "layout_inflater";
+     field public static final java.lang.String LOCATION_SERVICE = "location";
++    field public static final java.lang.String MCU_SERVICE = "mcu";
+     field public static final java.lang.String MEDIA_PROJECTION_SERVICE = "media_projection";
+     field public static final java.lang.String MEDIA_ROUTER_SERVICE = "media_router";
+     field public static final java.lang.String MEDIA_SESSION_SERVICE = "media_session";
+diff --git a/frameworks/base/api/system-current.txt b/frameworks/base/api/system-current.txt
+index 183453e..e717ca9 100644
+--- a/frameworks/base/api/system-current.txt
++++ b/frameworks/base/api/system-current.txt
+@@ -9480,6 +9480,7 @@ package android.content {
+     field public static final java.lang.String LAUNCHER_APPS_SERVICE = "launcherapps";
+     field public static final java.lang.String LAYOUT_INFLATER_SERVICE = "layout_inflater";
+     field public static final java.lang.String LOCATION_SERVICE = "location";
++    field public static final java.lang.String MCU_SERVICE = "mcu";
+     field public static final java.lang.String MEDIA_PROJECTION_SERVICE = "media_projection";
+     field public static final java.lang.String MEDIA_ROUTER_SERVICE = "media_router";
+     field public static final java.lang.String MEDIA_SESSION_SERVICE = "media_session";
+diff --git a/frameworks/base/api/test-current.txt b/frameworks/base/api/test-current.txt
+index 7ce76dc..a121713 100644
+--- a/frameworks/base/api/test-current.txt
++++ b/frameworks/base/api/test-current.txt
+@@ -9003,6 +9003,7 @@ package android.content {
+     field public static final java.lang.String LAUNCHER_APPS_SERVICE = "launcherapps";
+     field public static final java.lang.String LAYOUT_INFLATER_SERVICE = "layout_inflater";
+     field public static final java.lang.String LOCATION_SERVICE = "location";
++    field public static final java.lang.String MCU_SERVICE = "mcu";
+     field public static final java.lang.String MEDIA_PROJECTION_SERVICE = "media_projection";
+     field public static final java.lang.String MEDIA_ROUTER_SERVICE = "media_router";
+     field public static final java.lang.String MEDIA_SESSION_SERVICE = "media_session";
+diff --git a/frameworks/base/core/java/android/app/SystemServiceRegistry.java b/frameworks/base/core/java/android/app/SystemServiceRegistry.java
+index ce1fe51..8b609cf 100755
+--- a/frameworks/base/core/java/android/app/SystemServiceRegistry.java
++++ b/frameworks/base/core/java/android/app/SystemServiceRegistry.java
+@@ -120,6 +120,7 @@ import android.os.UserHandle;
+ import android.os.UserManager;
+ import android.os.Vibrator;
+ import android.os.SystemGpio;
++import android.os.SystemMcu;
+ import android.os.health.SystemHealthManager;
+ import android.os.storage.StorageManager;
+ import android.print.IPrintManager;
+@@ -544,6 +545,13 @@ final class SystemServiceRegistry {
+             public SystemGpio createService(ContextImpl ctx) {
+                 return new SystemGpio(ctx);
+             }});
++            
++        registerService(Context.MCU_SERVICE, SystemMcu.class,
++                new CachedServiceFetcher<SystemMcu>() {
++            @Override
++            public SystemMcu createService(ContextImpl ctx) {
++                return new SystemMcu(ctx);
++            }});
+ 
+         registerService(Context.WALLPAPER_SERVICE, WallpaperManager.class,
+                 new CachedServiceFetcher<WallpaperManager>() {
+diff --git a/frameworks/base/core/java/android/content/Context.java b/frameworks/base/core/java/android/content/Context.java
+index c18b848..778bc98 100755
+--- a/frameworks/base/core/java/android/content/Context.java
++++ b/frameworks/base/core/java/android/content/Context.java
+@@ -3354,6 +3354,7 @@ public abstract class Context {
+     public static final String VIBRATOR_SERVICE = "vibrator";
+     
+     public static final String GPIO_SERVICE = "gpio";
++    public static final String MCU_SERVICE = "mcu";
+ 
+     /**
+      * Use with {@link #getSystemService} to retrieve a {@link
+diff --git a/frameworks/base/core/java/android/os/IMcuService.aidl b/frameworks/base/core/java/android/os/IMcuService.aidl
+new file mode 100755
+index 0000000..4276e1c
+--- /dev/null
++++ b/frameworks/base/core/java/android/os/IMcuService.aidl
+@@ -0,0 +1,11 @@
++package android.os;
++ 
++/** {@hide} */
++interface IMcuService
++{
++	int heartbeat();
++	int setUptime(int time);
++	int openWatchdog();
++	int closeWatchdog();
++	int setWatchdogDuration(int duration);
++}
+diff --git a/frameworks/base/core/java/android/os/SystemMcu.java b/frameworks/base/core/java/android/os/SystemMcu.java
+new file mode 100755
+index 0000000..c5b3184
+--- /dev/null
++++ b/frameworks/base/core/java/android/os/SystemMcu.java
+@@ -0,0 +1,69 @@
++
++package android.os;
++
++import android.content.Context;
++import android.media.AudioAttributes;
++import android.util.Log;
++
++/**
++    Mcu implementation that controls the main system mcu.
++
++    @hide
++*/
++public class SystemMcu
++{
++    private static final String TAG = "mcu";
++
++    private final IMcuService mService;
++    public SystemMcu()
++    {
++        mService = IMcuService.Stub.asInterface(
++                       ServiceManager.getService("mcu"));
++    }
++
++    public SystemMcu(Context context)
++    {
++        mService = IMcuService.Stub.asInterface(
++                       ServiceManager.getService("mcu"));
++    }
++
++    public int heartbeat()
++    {
++        try {
++            return mService.heartbeat();
++        } catch(Exception e) {}
++        return -1;
++    }
++    
++    public int setUptime(int time)
++    {
++        try {
++            return mService.setUptime(time);
++        } catch(Exception e) {}
++        return -1;
++    }
++    
++    public int openWatchdog()
++    {
++        try {
++            return mService.openWatchdog();
++        } catch(Exception e) {}
++        return -1;
++    }
++    
++    public int closeWatchdog()
++    {
++        try {
++            return mService.closeWatchdog();
++        } catch(Exception e) {}
++        return -1;
++    }
++    
++    public int setWatchdogDuration(int duration)
++    {
++        try {
++            return mService.setWatchdogDuration(duration);
++        } catch(Exception e) {}
++        return -1;
++    }
++}
+diff --git a/frameworks/base/services/core/java/com/android/server/McuService.java b/frameworks/base/services/core/java/com/android/server/McuService.java
+new file mode 100755
+index 0000000..98f1898
+--- /dev/null
++++ b/frameworks/base/services/core/java/com/android/server/McuService.java
+@@ -0,0 +1,49 @@
++package com.android.server;
++import android.os.IMcuService;
++
++public class McuService extends IMcuService.Stub
++{
++    private static final String TAG = "McuService";
++    
++    // Switch watchdog value
++    private static final int ON = 1;
++    private static final int OFF = 0;
++
++    /* call native c function to access hardware */
++    public int heartbeat() throws android.os.RemoteException
++    {
++        return native_mcuHeartbeat();
++    }
++    
++    public int setUptime(int time) throws android.os.RemoteException
++    {
++        return native_mcuSetUptime(time);
++    }
++    
++    public int openWatchdog() throws android.os.RemoteException
++    {
++        return native_mcuSwitchWatchdog(ON);
++    }
++    
++    public int closeWatchdog() throws android.os.RemoteException
++    {
++        return native_mcuSwitchWatchdog(OFF);
++    }
++    
++    public int setWatchdogDuration(int duration) throws android.os.RemoteException
++    {
++        return native_mcuSetWatchdogDuration(duration);
++    }
++    
++    public McuService()
++    {
++        native_mcuOpen();
++    }
++
++    public static native int native_mcuOpen();
++    public static native void native_mcuClose();
++    public static native int native_mcuHeartbeat();
++    public static native int native_mcuSetUptime(int time);
++    public static native int native_mcuSwitchWatchdog(int onoff);
++    public static native int native_mcuSetWatchdogDuration(int duration);
++}
+diff --git a/frameworks/base/services/core/jni/Android.mk b/frameworks/base/services/core/jni/Android.mk
+index 0d57546..67dda50 100755
+--- a/frameworks/base/services/core/jni/Android.mk
++++ b/frameworks/base/services/core/jni/Android.mk
+@@ -39,6 +39,7 @@ LOCAL_SRC_FILES += \
+     $(LOCAL_REL_DIR)/com_android_server_UsbHostManager.cpp \
+     $(LOCAL_REL_DIR)/com_android_server_VibratorService.cpp \
+     $(LOCAL_REL_DIR)/com_android_server_GpioService.cpp \
++    $(LOCAL_REL_DIR)/com_android_server_McuService.cpp \
+     $(LOCAL_REL_DIR)/com_android_server_PersistentDataBlockService.cpp \
+     $(LOCAL_REL_DIR)/com_android_server_GraphicsStatsService.cpp \
+     $(LOCAL_REL_DIR)/onload.cpp
+diff --git a/frameworks/base/services/core/jni/com_android_server_McuService.cpp b/frameworks/base/services/core/jni/com_android_server_McuService.cpp
+new file mode 100755
+index 0000000..0ee87f2
+--- /dev/null
++++ b/frameworks/base/services/core/jni/com_android_server_McuService.cpp
+@@ -0,0 +1,90 @@
++#include "jni.h"
++#include "JNIHelp.h"
++#include "android_runtime/AndroidRuntime.h"
++#include <utils/misc.h>
++#include <utils/Log.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++#include <sys/ioctl.h>
++#include <hardware/mcu_hal.h>
++
++namespace android
++{
++
++static struct mcu_device_t* mcuDevice;
++
++jint mcuOpen(JNIEnv *env, jobject cls)
++{
++    jint err;
++    hw_module_t* module;
++    hw_device_t* device;
++    
++    ALOGI("native mcuOpen ...");
++
++    // hw_get_module finds the library by "mcu" (this is the id of hal)
++    err = hw_get_module("mcu", (hw_module_t const**)&module);
++    if(err == 0) {
++        // Get device : module->methods->open
++        err = module->methods->open(module, NULL, &device);
++        if(err == 0) {
++            // Call mcu_open
++            mcuDevice = (mcu_device_t *)device;
++            return mcuDevice->mcu_open(mcuDevice);
++        } else {
++            return -1;
++        }
++    }
++
++    return -1;
++}
++
++void mcuClose(JNIEnv *env, jobject cls)
++{
++    ALOGI("native mcuClose ...");
++}
++
++jint mcuHeartbeat(JNIEnv *env, jobject cls)
++{
++    ALOGI("native mcuHeartbeat");
++    return mcuDevice->mcu_heartbeat(mcuDevice);
++}
++
++jint mcuSetUptime(JNIEnv *env, jobject cls, jint time)
++{
++    ALOGI("native mcuSetUptime time=%d", time);
++    return mcuDevice->mcu_set_uptime(mcuDevice, time);
++}
++
++jint mcuSwitchWatchdog(JNIEnv *env, jobject cls, jint onoff)
++{
++    ALOGI("native mcuSwitchWatchdog onoff=%d", onoff);
++    return mcuDevice->mcu_switch_watchdog(mcuDevice, onoff);
++}
++
++jint mcuSetWatchdogDuration(JNIEnv *env, jobject cls, jint duration)
++{
++    ALOGI("native mcuSetWatchdogDuration duration=%d", duration);
++    return mcuDevice->mcu_set_watchdog_duration(mcuDevice, duration);
++}
++
++// Register native methods
++static const JNINativeMethod methods[] = {
++    {"native_mcuOpen", "()I", (void *)mcuOpen},
++    {"native_mcuClose", "()V", (void *)mcuClose},
++    {"native_mcuHeartbeat", "()I", (void *)mcuHeartbeat},
++    {"native_mcuSetUptime", "(I)I", (void *)mcuSetUptime},
++    {"native_mcuSwitchWatchdog", "(I)I", (void *)mcuSwitchWatchdog},
++    {"native_mcuSetWatchdogDuration", "(I)I", (void *)mcuSetWatchdogDuration},
++};
++    
++int register_android_server_McuService(JNIEnv *env)
++{
++    // The Java method corresponding to the local method McuService
++    return jniRegisterNativeMethods(env, "com/android/server/McuService",
++                                    methods, NELEM(methods));
++}
++
++}
+diff --git a/frameworks/base/services/core/jni/onload.cpp b/frameworks/base/services/core/jni/onload.cpp
+index 08ddb64..0f8e3d8 100755
+--- a/frameworks/base/services/core/jni/onload.cpp
++++ b/frameworks/base/services/core/jni/onload.cpp
+@@ -40,6 +40,7 @@ int register_android_server_UsbHostManager(JNIEnv* env);
+ int register_android_server_vr_VrManagerService(JNIEnv* env);
+ int register_android_server_VibratorService(JNIEnv* env);
+ int register_android_server_GpioService(JNIEnv* env);
++int register_android_server_McuService(JNIEnv* env);
+ int register_android_server_location_ContextHubService(JNIEnv* env);
+ int register_android_server_location_GnssLocationProvider(JNIEnv* env);
+ int register_android_server_connectivity_Vpn(JNIEnv* env);
+@@ -84,6 +85,7 @@ extern "C" jint JNI_OnLoad(JavaVM* vm, void* /* reserved */)
+     register_android_server_vr_VrManagerService(env);
+     register_android_server_VibratorService(env);
+     register_android_server_GpioService(env);
++    register_android_server_McuService(env);
+     register_android_server_SystemServer(env);
+     register_android_server_location_ContextHubService(env);
+     register_android_server_location_GnssLocationProvider(env);
+diff --git a/frameworks/base/services/java/com/android/server/SystemServer.java b/frameworks/base/services/java/com/android/server/SystemServer.java
+index 8800516..e693dcd 100755
+--- a/frameworks/base/services/java/com/android/server/SystemServer.java
++++ b/frameworks/base/services/java/com/android/server/SystemServer.java
+@@ -800,6 +800,11 @@ public final class SystemServer {
+             GpioService gpio = new GpioService();
+             ServiceManager.addService("gpio", gpio);
+             traceEnd();
++            
++            traceBeginAndSlog("StartMcuService");
++            McuService mcu = new McuService();
++            ServiceManager.addService("mcu", mcu);
++            traceEnd();
+ 
+             if (!disableConsumerIr) {
+                 traceBeginAndSlog("StartConsumerIrService");
+diff --git a/hardware/libhardware/include/hardware/mcu_hal.h b/hardware/libhardware/include/hardware/mcu_hal.h
+new file mode 100755
+index 0000000..01a1610
+--- /dev/null
++++ b/hardware/libhardware/include/hardware/mcu_hal.h
+@@ -0,0 +1,22 @@
++#ifndef ANDROID_mcu_INTERFACE_H
++#define ANDROID_mcu_INTERFACE_H
++
++#include <stdint.h>
++#include <sys/cdefs.h>
++#include <sys/types.h>
++#include <hardware/hardware.h>
++
++__BEGIN_DECLS
++struct mcu_device_t {
++    struct hw_device_t common;
++
++    int (*mcu_open)(struct mcu_device_t* dev);
++    int (*mcu_heartbeat)(struct mcu_device_t* dev);
++    int (*mcu_set_uptime)(struct mcu_device_t* dev, int time);
++    int (*mcu_switch_watchdog)(struct mcu_device_t* dev, int onoff);
++    int (*mcu_set_watchdog_duration)(struct mcu_device_t* dev, int duration);
++};
++
++__END_DECLS
++
++#endif  // ANDROID_mcu_INTERFACE_H
+diff --git a/hardware/libhardware/modules/Android.mk b/hardware/libhardware/modules/Android.mk
+index 9e33f41..bc0b36b 100755
+--- a/hardware/libhardware/modules/Android.mk
++++ b/hardware/libhardware/modules/Android.mk
+@@ -11,5 +11,6 @@ hardware_modules := \
+     usbcamera \
+     vehicle \
+     vr \
+-	gpio
++    gpio \
++    mcu
+ include $(call all-named-subdir-makefiles,$(hardware_modules))
+diff --git a/hardware/libhardware/modules/mcu/Android.mk b/hardware/libhardware/modules/mcu/Android.mk
+new file mode 100755
+index 0000000..23687011
+--- /dev/null
++++ b/hardware/libhardware/modules/mcu/Android.mk
+@@ -0,0 +1,29 @@
++# Copyright (C) 2012 The Android Open Source Project
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#      http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++LOCAL_PATH := $(call my-dir)
++
++include $(CLEAR_VARS)
++
++LOCAL_MODULE := mcu.default
++
++LOCAL_MODULE_RELATIVE_PATH := hw
++LOCAL_PROPRIETARY_MODULE := true
++LOCAL_SRC_FILES := mcu_hal.c
++LOCAL_HEADER_LIBRARIES := libhardware_headers
++LOCAL_SHARED_LIBRARIES := liblog libcutils libutils
++LOCAL_MODULE_TAGS := optional
++
++include $(BUILD_SHARED_LIBRARY)
++
+diff --git a/hardware/libhardware/modules/mcu/mcu_hal.c b/hardware/libhardware/modules/mcu/mcu_hal.c
+new file mode 100755
+index 0000000..dd139b4
+--- /dev/null
++++ b/hardware/libhardware/modules/mcu/mcu_hal.c
+@@ -0,0 +1,149 @@
++#include <hardware/hardware.h>
++#include <cutils/log.h>
++#include <stdio.h>
++#include <unistd.h>
++#include <fcntl.h>
++#include <errno.h>
++#include <hardware/mcu_hal.h>
++#include <stdlib.h>
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <sys/ioctl.h>
++#include <utils/Log.h>
++
++#define DEVICE "/dev/n76e003"
++
++// ioctl cmd
++#define N76E003_IOC_MAGIC  'k'
++
++#define N76E003_IOC_HEARTBEAT               _IO(N76E003_IOC_MAGIC, 1)
++#define N76E003_IOC_SET_UPTIME              _IOW(N76E003_IOC_MAGIC, 2, int)
++#define N76E003_IOC_SWITCH_WATCHDOG         _IOW(N76E003_IOC_MAGIC, 3, int)
++#define N76E003_IOC_SET_WATCHDOG_DURATION   _IOW(N76E003_IOC_MAGIC, 4, int)
++
++#define N76E003_IOC_MAXNR 4
++
++static int fd;
++
++static int mcu_close(struct hw_device_t* device)
++{
++    close(fd);
++    return 0;
++}
++
++static int mcu_open(struct mcu_device_t* dev)
++{
++    fd = open(DEVICE, O_RDWR);
++    ALOGI("mcu_open : %d", fd);
++
++    if(fd >= 0) {
++        return 0;
++    } else {
++        return -1;
++    }
++}
++
++static int mcu_heartbeat(struct mcu_device_t* dev)
++{
++    int ret = 0;
++    int data = 0;
++    
++    if(fd < 0) {
++        ret = mcu_open(dev);
++        if (ret < 0) {
++            return -1;
++        }
++    }
++
++    ret = ioctl(fd, N76E003_IOC_HEARTBEAT, &data);
++    
++    ALOGI("mcu_heartbeat: data=%d, ret=%d", data, ret);
++    
++    return ret;
++}
++
++static int mcu_set_uptime(struct mcu_device_t* dev, int time)
++{
++    int ret = 0;
++    int data = time;
++    
++    if(fd < 0) {
++        ret = mcu_open(dev);
++        if (ret < 0) {
++            return -1;
++        }
++    }
++
++    ret = ioctl(fd, N76E003_IOC_SET_UPTIME, &data);
++    
++    ALOGI("mcu_set_uptime: data=%d, ret=%d", data, ret);
++    
++    return ret;
++}
++
++static int mcu_switch_watchdog(struct mcu_device_t* dev, int onoff)
++{
++    int ret = 0;
++    int data = onoff;
++    
++    if(fd < 0) {
++        ret = mcu_open(dev);
++        if (ret < 0) {
++            return -1;
++        }
++    }
++
++    ret = ioctl(fd, N76E003_IOC_SWITCH_WATCHDOG, &data);
++    
++    ALOGI("mcu_switch_watchdog: data=%d, ret=%d", data, ret);
++    
++    return ret;
++}
++
++static int mcu_set_watchdog_duration(struct mcu_device_t* dev, int duration)
++{
++    int ret = 0;
++    int data = duration;
++    
++    if(fd < 0) {
++        ret = mcu_open(dev);
++        if (ret < 0) {
++            return -1;
++        }
++    }
++
++    ret = ioctl(fd, N76E003_IOC_SET_WATCHDOG_DURATION, &data);
++    
++    ALOGI("mcu_set_watchdog_duration: data=%d, ret=%d", data, ret);
++    
++    return ret;
++}
++
++static struct mcu_device_t mcu_dev = {
++    .common = {
++        .tag   = HARDWARE_DEVICE_TAG,
++        .close = mcu_close,
++    },
++    .mcu_open  = mcu_open,
++    .mcu_heartbeat  = mcu_heartbeat,
++    .mcu_set_uptime  = mcu_set_uptime,
++    .mcu_switch_watchdog  = mcu_switch_watchdog,
++    .mcu_set_watchdog_duration  = mcu_set_watchdog_duration,
++};
++
++static int mcu_device_open(const struct hw_module_t* module, const char* id,
++                           struct hw_device_t** device)
++{
++    *device = &mcu_dev;
++    return 0;
++}
++
++static struct hw_module_methods_t mcu_module_methods = {
++    .open = mcu_device_open,
++};
++
++struct hw_module_t HAL_MODULE_INFO_SYM = {
++    .tag = HARDWARE_MODULE_TAG,
++    .id = "mcu",
++    .methods = &mcu_module_methods,
++};
+diff --git a/kernel/drivers/misc/n76e003/n76e003.c b/kernel/drivers/misc/n76e003/n76e003.c
+index 1b7dde9..0bee283 100755
+--- a/kernel/drivers/misc/n76e003/n76e003.c
++++ b/kernel/drivers/misc/n76e003/n76e003.c
+@@ -253,7 +253,7 @@ static int n76e003_i2c_test(struct i2c_client *client)
+ 
+ void n76e003_heartbeat(struct i2c_client *client)
+ {
+-    n76e003_write(client, REG_HEARTBEAT, 0x55);
++    n76e003_write(client, REG_HEARTBEAT, DATA_HEARTBEAT);
+ }
+ 
+ void n76e003_set_uptime(struct i2c_client *client, unsigned long time)
+@@ -262,6 +262,21 @@ void n76e003_set_uptime(struct i2c_client *client, unsigned long time)
+     n76e003_i2c_write(client, buf, 5);
+ }
+ 
++void n76e003_switch_watchdog(struct i2c_client *client, int onoff)
++{
++    if (onoff > 0) {
++        n76e003_write(client, REG_SWITCH_WATCHDOG, DATA_ON);
++    } else {
++        n76e003_write(client, REG_SWITCH_WATCHDOG, DATA_OFF);
++    }
++}
++
++void n76e003_set_watchdog_duration(struct i2c_client *client, unsigned long time)
++{
++    u8 buf[3] = {REG_SET_WATCHDOG_DURATION, (time>>8&0xff), (time&0xff)};
++    n76e003_i2c_write(client, buf, 3);
++}
++
+ static int n76e003_dev_open(struct inode *inode, struct file *filp)
+ {
+ 	int ret = 0;
+@@ -313,6 +328,24 @@ static long n76e003_dev_ioctl(struct file *pfile,
+             }
+     		n76e003_set_uptime(n76e003->client, data);
+     		break;
++
++        case N76E003_IOC_SWITCH_WATCHDOG:
++            if (copy_from_user(&data, (int *)arg, sizeof(int))) {
++                dev_err(&n76e003->client->dev, 
++                    "%s, copy from user failed\n", __func__);
++                return -EFAULT;
++            }
++    		n76e003_switch_watchdog(n76e003->client, data);
++    		break;
++
++        case N76E003_IOC_SET_WATCHDOG_DURATION:
++            if (copy_from_user(&data, (int *)arg, sizeof(int))) {
++                dev_err(&n76e003->client->dev, 
++                    "%s, copy from user failed\n", __func__);
++                return -EFAULT;
++            }
++    		n76e003_set_watchdog_duration(n76e003->client, data);
++    		break;
+             
+     	default:
+     		return -EINVAL;
+diff --git a/kernel/drivers/misc/n76e003/n76e003.h b/kernel/drivers/misc/n76e003/n76e003.h
+index 68cedb0..1c93766 100755
+--- a/kernel/drivers/misc/n76e003/n76e003.h
++++ b/kernel/drivers/misc/n76e003/n76e003.h
+@@ -56,17 +56,26 @@
+ #define RETRY_MAX_TIMES         3
+ 
+ // Register address
+-#define REG_CHIPID      0x00
+-#define REG_HEARTBEAT   0x01
+-#define REG_SET_UPTIME  0x02
++#define REG_CHIPID                  0x00
++#define REG_HEARTBEAT               0x01
++#define REG_SET_UPTIME              0x02
++#define REG_SWITCH_WATCHDOG       0x03
++#define REG_SET_WATCHDOG_DURATION  0x04
++
++#define DATA_HEARTBEAT              0x55
++#define DATA_ON                     0x01
++#define DATA_OFF                    0x02
++
+ 
+ // ioctl cmd
+ #define N76E003_IOC_MAGIC  'k'
+ 
+-#define N76E003_IOC_HEARTBEAT   _IO(N76E003_IOC_MAGIC, 1)
+-#define N76E003_IOC_SET_UPTIME _IOW(N76E003_IOC_MAGIC, 2, int)
++#define N76E003_IOC_HEARTBEAT               _IO(N76E003_IOC_MAGIC, 1)
++#define N76E003_IOC_SET_UPTIME              _IOW(N76E003_IOC_MAGIC, 2, int)
++#define N76E003_IOC_SWITCH_WATCHDOG         _IOW(N76E003_IOC_MAGIC, 3, int)
++#define N76E003_IOC_SET_WATCHDOG_DURATION   _IOW(N76E003_IOC_MAGIC, 4, int)
+ 
+-#define N76E003_IOC_MAXNR 2
++#define N76E003_IOC_MAXNR 4
+ 
+ struct n76e003_data {
+     struct i2c_client *client;
+diff --git a/system/core/rootdir/ueventd.rc b/system/core/rootdir/ueventd.rc
+index f0a3609..c473e89 100755
+--- a/system/core/rootdir/ueventd.rc
++++ b/system/core/rootdir/ueventd.rc
+@@ -65,8 +65,9 @@ subsystem sound
+ # kms driver for drm based gpu
+ /dev/dri/*                0666   root       graphics
+ 
+-# topband gpio driver
++# for topband
+ /dev/topband_gpio         0666   system     system
++/dev/n76e003              0666   system     system
+ 
+ # these should not be world writable
+ /dev/diag                 0660   radio      radio

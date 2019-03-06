@@ -1,0 +1,8 @@
+#
+#  N76E003 driver configuration
+#
+config N76E003_DRIVER
+       tristate  "nuvoTon N76E003 driver"    
+       default n
+       help
+           nuvoTon N76E003 driver for timed boot
